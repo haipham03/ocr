@@ -19,6 +19,7 @@ from vietocr.vietocr.tool.predictor import Predictor
 from vietocr.vietocr.tool.config import Cfg
 
 from PaddleOCR import PaddleOCR, draw_ocr
+import heapq
 
 # from VietnameseOcrCorrection.tool.predictor import Corrector
 # import time
@@ -30,69 +31,46 @@ from PaddleOCR import PaddleOCR, draw_ocr
 # Specifying output path and font path.
 FONT = './PaddleOCR/doc/fonts/latin.ttf'
 
+import google.generativeai as genai
 
-def predict(recognitor, detector, img_path, padding=4):
-    # Load image
+# Initialize Gemini model (only once)
+genai.configure(api_key="AIzaSyDg-QwX8nhAMYF71jZhD1NgMNOnxTFxvDY")
+gemini_model = genai.GenerativeModel("models/gemini-2.0-flash")
+
+
+def predict(recognitor, detector, img_path, padding=4, refine_count=5):
     img = cv2.imread(img_path)
 
-    # Text detection
+    # OCR detection
     result = detector.ocr(img_path, cls=False, det=True, rec=False)
     result = result[:][:][0]
 
-    # Filter Boxes
     boxes = []
     for line in result:
         boxes.append([[int(line[0][0]), int(line[0][1])], [int(line[2][0]), int(line[2][1])]])
     boxes = boxes[::-1]
 
-    # Add padding to boxes
     for box in boxes:
         x1, y1 = box[0]
         x2, y2 = box[1]
-
-        # Tính lại box có padding tỉ lệ
         centre_x = (x1 + x2) / 2
         centre_y = (y1 + y2) / 2
         len_x = (x2 - x1) * 1.25
         len_y = (y2 - y1) * 1.25
-        box[0][0] = int(centre_x - len_x / 2)
-        box[0][1] = int(centre_y - len_y / 2)
-        box[1][0] = int(centre_x + len_x / 2)
-        box[1][1] = int(centre_y + len_y / 2)
+        box[0][0] = int(centre_x - len_x / 2) - padding
+        box[0][1] = int(centre_y - len_y / 2) - padding
+        box[1][0] = int(centre_x + len_x / 2) + padding
+        box[1][1] = int(centre_y + len_y / 2) + padding
 
-        box[0][0] = box[0][0] - padding
-        box[0][1] = box[0][1] - padding
-        box[1][0] = box[1][0] + padding
-        box[1][1] = box[1][1] + padding
-
-    # Text recognition
-    texts = []
+    # Step 1: Recognize text and collect results
+    results = []
     for box in boxes:
         x1, y1 = box[0]
         x2, y2 = box[1]
-
-        # Dựng 4 điểm của box (giả sử là hình chữ nhật, không xoay)
-        src_pts = np.float32([
-            [x1, y1],  # top-left
-            [x2, y1],  # top-right
-            [x2, y2],  # bottom-right
-            [x1, y2]   # bottom-left
-        ])
-
-        width = x2 - x1
-        height = y2 - y1
-
-        dst_pts = np.float32([
-            [0, 0],
-            [width, 0],
-            [width, height],
-            [0, height]
-        ])
-
-        # Tính ma trận biến đổi phối cảnh
+        src_pts = np.float32([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+        width, height = x2 - x1, y2 - y1
+        dst_pts = np.float32([[0, 0], [width, 0], [width, height], [0, height]])
         M = cv2.getPerspectiveTransform(src_pts, dst_pts)
-
-        # Áp dụng warp perspective
         warped = cv2.warpPerspective(img, M, (width, height))
 
         try:
@@ -100,12 +78,33 @@ def predict(recognitor, detector, img_path, padding=4):
         except:
             continue
 
-        rec_result, prob = recognitor.predict(cropped_image, return_prob=True)
-        text = rec_result  # or rec_result[0] depending on recognitor output
+        text, prob = recognitor.predict(cropped_image, return_prob=True)
+        results.append((box, text, prob, cropped_image))
 
-        texts.append(text)
-        print(text, prob)
-    return boxes, texts
+    lowest_conf = heapq.nsmallest(refine_count, results, key=lambda x: x[2])
+
+    refined_map = {}
+    for box, orig_text, prob, crop in lowest_conf:
+        try:
+            gemini_response = gemini_model.generate_content([
+                "Please read and transcribe the text in this image accurately. Only return the text, no other information.",
+                crop
+            ])
+            refined_text = gemini_response.text.strip()
+            refined_map[tuple(map(tuple, box))] = refined_text
+        except Exception as e:
+            print("Gemini error:", e)
+            refined_map[tuple(map(tuple, box))] = orig_text  # fallback
+
+    # Step 4: Reassemble final text results
+    final_texts = []
+    for box, text, prob, crop in results:
+        key = tuple(map(tuple, box))
+        final_texts.append(refined_map.get(key, text))
+
+    for text in final_texts:
+        print(text)
+    return boxes, final_texts
 
 def main():
     parser = argparse.ArgumentParser()
