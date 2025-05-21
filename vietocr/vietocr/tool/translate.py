@@ -36,9 +36,9 @@ def translate_beam_search(img, model, beam_size=4, candidates=1, max_seq_length=
     with torch.no_grad():
         src = model.cnn(img)
         memory = model.transformer.forward_encoder(src) #TxNxE
-        sent = beamsearch(memory, model, device, beam_size, candidates, max_seq_length, sos_token, eos_token)
+        sent, prob = beamsearch(memory, model, device, beam_size, candidates, max_seq_length, sos_token, eos_token)
 
-    return sent
+    return sent, prob
         
 def beamsearch(memory, model, device, beam_size=4, candidates=1, max_seq_length=128, sos_token=1, eos_token=2):    
     # memory: Tx1xE
@@ -66,9 +66,10 @@ def beamsearch(memory, model, device, beam_size=4, candidates=1, max_seq_length=
         hypothesises = []
         for i, (times, k) in enumerate(ks[:candidates]):
             hypothesis = beam.get_hypothesis(times, k)
-            hypothesises.append(hypothesis)
+            hypothesises.append((hypothesis, scores[i].item()))  # Return score
     
-    return [1] + [int(i) for i in hypothesises[0][:-1]]
+    best_hypothesis, log_prob = hypothesises[0]
+    return [1] + [int(i) for i in best_hypothesis[:-1]], log_prob
 
 def translate(img, model, max_seq_length=128, sos_token=1, eos_token=2):
     "data: BxCXHxW"

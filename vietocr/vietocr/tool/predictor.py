@@ -30,9 +30,7 @@ class Predictor():
         img = img.to(self.config['device'])
 
         if self.config['predictor']['beamsearch']:
-            sent = translate_beam_search(img, self.model)
-            s = sent
-            prob = None
+            s, prob = translate_beam_search(img, self.model)
         else:
             s, prob = translate(img, self.model)
             s = s[0].tolist()

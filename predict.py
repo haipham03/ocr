@@ -4,7 +4,7 @@ import os
 import cv2
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-from matplotlib.pyplot import figure
+from matplotlib.pyplot import bone, figure
 from PIL import Image
 import difflib
 import re
@@ -20,11 +20,11 @@ from vietocr.vietocr.tool.config import Cfg
 
 from PaddleOCR import PaddleOCR, draw_ocr
 
-from VietnameseOcrCorrection.tool.predictor import Corrector
-import time
-from VietnameseOcrCorrection.tool.utils import extract_phrases
+# from VietnameseOcrCorrection.tool.predictor import Corrector
+# import time
+# from VietnameseOcrCorrection.tool.utils import extract_phrases
 
-from ultis import display_image_in_actual_size
+# from ultis import display_image_in_actual_size
 
 
 # Specifying output path and font path.
@@ -46,28 +46,65 @@ def predict(recognitor, detector, img_path, padding=4):
     boxes = boxes[::-1]
 
     # Add padding to boxes
-    padding = 4
     for box in boxes:
+        x1, y1 = box[0]
+        x2, y2 = box[1]
+
+        # Tính lại box có padding tỉ lệ
+        centre_x = (x1 + x2) / 2
+        centre_y = (y1 + y2) / 2
+        len_x = (x2 - x1) * 1.25
+        len_y = (y2 - y1) * 1.25
+        box[0][0] = int(centre_x - len_x / 2)
+        box[0][1] = int(centre_y - len_y / 2)
+        box[1][0] = int(centre_x + len_x / 2)
+        box[1][1] = int(centre_y + len_y / 2)
+
         box[0][0] = box[0][0] - padding
         box[0][1] = box[0][1] - padding
         box[1][0] = box[1][0] + padding
         box[1][1] = box[1][1] + padding
 
-    # Text recognizion
+    # Text recognition
     texts = []
     for box in boxes:
-        cropped_image = img[box[0][1]:box[1][1], box[0][0]:box[1][0]]
+        x1, y1 = box[0]
+        x2, y2 = box[1]
+
+        # Dựng 4 điểm của box (giả sử là hình chữ nhật, không xoay)
+        src_pts = np.float32([
+            [x1, y1],  # top-left
+            [x2, y1],  # top-right
+            [x2, y2],  # bottom-right
+            [x1, y2]   # bottom-left
+        ])
+
+        width = x2 - x1
+        height = y2 - y1
+
+        dst_pts = np.float32([
+            [0, 0],
+            [width, 0],
+            [width, height],
+            [0, height]
+        ])
+
+        # Tính ma trận biến đổi phối cảnh
+        M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+
+        # Áp dụng warp perspective
+        warped = cv2.warpPerspective(img, M, (width, height))
+
         try:
-            cropped_image = Image.fromarray(cropped_image)
+            cropped_image = Image.fromarray(warped)
         except:
             continue
 
-        rec_result = recognitor.predict(cropped_image)
-        text = rec_result#[0]
+        rec_result, prob = recognitor.predict(cropped_image, return_prob=True)
+        text = rec_result  # or rec_result[0] depending on recognitor output
 
         texts.append(text)
-        print(text)
-
+        print(text, prob)
     return boxes, texts
 
 def main():
@@ -86,7 +123,7 @@ def main():
 
     config['cnn']['pretrained'] = True
     config['predictor']['beamsearch'] = True
-    config['device'] = 'mps'
+    config['device'] = 'cuda'
 
     recognitor = Predictor(config)
 
@@ -95,7 +132,7 @@ def main():
     
 
     # Predict
-    boxes, texts = predict(recognitor, detector, args.img, padding=2)
+    bounding_boxes, result_texts = predict(recognitor, detector, args.img, padding=0)
 
 
 if __name__ == "__main__":    
